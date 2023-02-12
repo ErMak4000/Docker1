@@ -1,91 +1,61 @@
-# Домашнее задание для к уроку 7 - Продвинутые абстракции Kubernetes
+# Домашнее задание для к уроку 8 - CI/CD
 
-> ! Задание нужно выполнять в нэймспэйсе default
+> В рамках данного задания нужно продолжить работу с CI приложения из лекции.
+> То есть для начала выполнения этого домашнего задания необходимо проделать то,
+> что показывалось в лекции.
+> Все задание должно выполняться применительно к файлам в директории practice/8.ci-cd/app
 
-Разверните в кластере сервер системy мониторинга Prometheus.
+Переделайте шаг деплоя в CI/CD, который демонстрировался на лекции
+таким образом, чтобы при каждом прогоне шага deploy в кластер применялись
+манифесты приложения. При этом версия докер образа в деплойменте при апплае
+должна подменяться на ту, что была собрана в шаге build.
 
-* Создайте в кластере ConfigMap со следующим содержимым:
+Для этого самым очевидным способом было бы воспользоваться утилитой sed.
 
-```yaml
-prometheus.yml: |
-  global:
-    scrape_interval: 30s
-  
-  scrape_configs:
-    - job_name: 'prometheus'
-      static_configs:
-      - targets: ['localhost:9090']
+* Измените образ в деплойменте приложения (файл kube/deployment.yaml) на плейсхолдер.
 
-    - job_name: 'kubernetes-nodes'
-      kubernetes_sd_configs:
-      - role: node
-      relabel_configs:
-      - source_labels: [__address__]
-        regex: (.+):(.+)
-        target_label: __address__
-        replacement: ${1}:9101
-```
-
-Создайте объекты для авторизации Prometheus сервера в Kubernetes-API.
+Вот это
 
 ```yaml
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: prometheus
-  namespace: default
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: prometheus
-rules:
-- apiGroups: [""]
-  resources:
-  - nodes
-  verbs: ["get", "list", "watch"]
----  
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: prometheus
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: prometheus
-subjects:
-- kind: ServiceAccount
-  name: prometheus
-  namespace: default
+image: nginx:1.12 # это просто плэйсхолдер
 ```
 
-* Создайте StatefulSet для Prometheus сервера из образа prom/prometheus:v2.19.2 с одной репликой
+На это
 
-В нем должнен быть описан порт 9090 TCP
-volumeClaimTemplate - ReadWriteOnce, 5Gi, подключенный по пути /prometheus
-Подключение конфигмапа с настройками выше по пути /etc/prometheus
+```yaml
+image: __IMAGE__
+```
 
-Так же в этом стейтфулсете нужно объявить initContainer для изменения права на 777 для каталога /prometheus.
-См пример из лекции 4: practice/4.resources-and-persistence/persistence/deployment.yaml
+* Измените шаг деплоя в .gitlab-ci.yml,
+чтобы изменять __IMAGE__ на реальное имя образа и тег
 
-> Не забудьте указать обязательное поле serviceName
+Это
 
-Так же укажите поле serviceAccount: prometheus на одном уровне с containers, initContainers, volumes
-См пример с rabbitmq из материалов лекции.
+```yaml
+- kubectl set image deployment/$CI_PROJECT_NAME *=$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG.$CI_PIPELINE_ID --namespace $CI_ENVIRONMENT_NAME
+```
 
-* Создайте service и ingress для этого стейтфулсета, так чтобы запросы с любым доменом на белый IP
-вашего сервиса nginx-ingress-controller (тот что в нэймспэйсе ingress-nginx с типом LoadBalancer)
-шли на приложение
+На это
 
-* Проверьте что при обращении из браузера на белый IP вы видите открывшееся
-приложение Prometheus
+```yaml
+- sed -i "s,__IMAGE__,$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG.$CI_PIPELINE_ID,g" kube/deployment.yaml
+- kubectl apply -f kube/ --namespace $CI_ENVIRONMENT_NAME
+```
 
-* В этом же неймспэйсе создайте DaemonSet node-exporter как в примере к лекции:
-practice/7.advanced-abstractions/daemonset.yaml
+> Вторую строчку шага деплоя (которая отслеживает статус деплоя) оставьте без изменений.
 
-* Откройте в браузере интерфейс Prometheus.
-Попробуйте открыть Status -> Targets
-Тут вы должны увидеть все ноды своего кластера, которые Prometheus смог определить и собирает с ним метрики.
+* Попробуйте закоммитить свои изменения, запушить их в репозиторий
+(тот же, который вы создавали во время лекции на Gitlab.com)
+и посмотреть на выполнение CI в интерфейсе Gitlab.
 
-Так же можете попробовать на вкладке Graph выполнить запрос node_load1 - это минутный Load Average для каждой из нод в кластере.
+> Так как окружений у нас два (stage и prod), то помимо образа при апплае из CI
+> нам также было бы хорошо подменять host в ingress.yaml.
+> Попробуйте реализовать это по аналогии, подставляя в ингресс вместо
+> плэйсхолдера значение переменной $CI_ENVIRONMENT_NAME
+
+* Так же попробуйте протестировать откат на предыдущую версию,
+при возникновении ошибки при деплое
+
+Для этого можно изменить значение переменной DB_HOST в deployment.yaml на какое нибудь несуществующее.
+Тогда при старте приложения оно не сможет найти БД и будет постоянно рестрартовать. CI должен в течении progressDeadlineSeconds: 300 и по.сле этого запустить процедуру отката.
+При этом не должно возникать недоступности приложения, так как старая реплика должна продолжать работать, пока новая пытается стартануть.
